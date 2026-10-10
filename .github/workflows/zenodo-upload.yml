@@ -1,0 +1,38 @@
+name: zenodo-upload
+on:
+  workflow_dispatch:
+    inputs:
+      record:
+        description: Zenodo draft record id
+        required: true
+        default: "23261953"
+      asset:
+        description: release asset file name
+        required: true
+        default: "SelCal_0.1.0_macOS_user_package.zip"
+      tag:
+        description: release tag holding the asset
+        required: true
+        default: "relay-v1"
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download the asset from this repository's release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "${{ inputs.tag }}" --repo "${{ github.repository }}" --pattern "${{ inputs.asset }}" --dir .
+          ls -l "${{ inputs.asset }}"; md5sum "${{ inputs.asset }}" | tee local.md5
+      - name: Upload to the Zenodo draft (create entry, stream content, commit)
+        env:
+          ZENODO_TOKEN: ${{ secrets.ZENODO_TOKEN }}
+        run: |
+          set -e
+          R="https://zenodo.org/api/records/${{ inputs.record }}/draft/files"; F="${{ inputs.asset }}"
+          curl -sS -m 300 -X DELETE -H "Authorization: Bearer $ZENODO_TOKEN" "$R/$F" -o /dev/null -w "pre-delete http=%{http_code}\n" || true
+          curl -sS -m 300 -X POST -H "Authorization: Bearer $ZENODO_TOKEN" -H "Content-Type: application/json" -d "[{\"key\": \"$F\"}]" "$R" -o create.json -w "create http=%{http_code}\n"
+          curl -sS -m 3000 -X PUT -H "Authorization: Bearer $ZENODO_TOKEN" -H "Content-Type: application/octet-stream" --upload-file "$F" "$R/$F/content" -o content.json -w "content http=%{http_code} time=%{time_total}s speed=%{speed_upload}B/s\n"
+          curl -sS -m 600 -X POST -H "Authorization: Bearer $ZENODO_TOKEN" "$R/$F/commit" -o commit.json -w "commit http=%{http_code}\n"
+          python3 -c "import json;d=json.load(open('commit.json'));print('ZENODO', d.get('key'), d.get('status'), d.get('size'), d.get('checksum'))"
+          echo "LOCAL md5 $(cut -d' ' -f1 local.md5)"
